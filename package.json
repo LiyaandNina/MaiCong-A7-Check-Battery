@@ -1,0 +1,17 @@
+{
+  "dependencies": {
+    "node-hid": "^3.3.0",
+    "node-notifier": "^10.0.1"
+  },
+  "name": "mchose",
+  "version": "1.0.0",
+  "main": "check_battery.js",
+  "devDependencies": {},
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": ""
+}
