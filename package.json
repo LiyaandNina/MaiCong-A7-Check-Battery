@@ -13,5 +13,13 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": ""
+  "description": "自用迈从A7低电量提醒",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LiyaandNina/MaiCong-A7-Check-Battery.git"
+  },
+  "bugs": {
+    "url": "https://github.com/LiyaandNina/MaiCong-A7-Check-Battery/issues"
+  },
+  "homepage": "https://github.com/LiyaandNina/MaiCong-A7-Check-Battery#readme"
 }

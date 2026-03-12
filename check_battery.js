@@ -1,58 +1,104 @@
 const HID = require('node-hid');
 const notifier = require('node-notifier');
 
-// MCHOSE A7 的 VID 和 PID（如需支持其他型号，可在此修改）
-const VENDOR_ID = 21075;  // 0x5253
-const PRODUCT_ID = 4129;  // 0x1021
+// 解析命令行参数
+const args = process.argv.slice(2);
+const DEBUG = args.includes('-d');
+const TEST_NOTIFY = args.includes('-t');
 
-// 自动查找能够正常通信的设备路径
-function findWorkingDevicePath() {
+function showHelp() {
+    console.log(`
+MCHOSE A7 电池电量监控器
+用法: node check_battery.js [选项]
+
+选项:
+  -d      启用调试输出，显示详细通信数据
+  -t      发送测试通知，检查通知功能是否正常
+  -h      显示本帮助信息
+
+示例:
+  node check_battery.js          # 正常监控模式
+  node check_battery.js -d       # 监控并显示调试信息
+  node check_battery.js -t       # 仅测试通知
+    `);
+}
+
+if (args.includes('-h') || args.includes('--help')) {
+    showHelp();
+    process.exit(0);
+}
+
+if (TEST_NOTIFY) {
+    notifier.notify({
+        title: 'MCHOSE 电量监控 - 测试通知',
+        message: '如果你看到这条消息，说明通知功能正常',
+        sound: true,
+        wait: false
+    });
+    console.log('测试通知已发送，请检查通知中心。');
+    process.exit(0);
+}
+
+const VENDOR_ID = 21075;
+const PRODUCT_ID = 4129;
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function debugLog(...msg) {
+    if (DEBUG) console.log('[DEBUG]', ...msg);
+}
+
+async function findWorkingDevicePath() {
     const devices = HID.devices().filter(d => d.vendorId === VENDOR_ID && d.productId === PRODUCT_ID);
     if (devices.length === 0) {
         throw new Error('未找到匹配的鼠标设备，请确认接收器已插入');
     }
 
     const reportId = 0x11;
-    const dataPart = [0x06, ...Array(19).fill(0x00)]; // 原始命令
-    const sendData = dataPart.map(b => b ^ 0xFF);     // 取反后数据
-    const sendBuffer = [reportId, ...sendData];       // 合并形式
+    const dataPart = [0x06, ...Array(19).fill(0x00)];
+    const sendData = dataPart.map(b => b ^ 0xFF);
+    const sendBuffer = [reportId, ...sendData];
 
     for (const devInfo of devices) {
-        console.log(`尝试设备: ${devInfo.path} (接口 ${devInfo.interface}, 用法页 ${devInfo.usagePage})`);
+        debugLog(`尝试设备: ${devInfo.path} (接口 ${devInfo.interface}, 用法页 ${devInfo.usagePage})`);
         let device;
         try {
             device = new HID.HID(devInfo.path);
         } catch (e) {
-            console.log(`  打开失败: ${e.message}`);
+            debugLog(`  打开失败: ${e.message}`);
             continue;
         }
 
-        // 尝试发送特征报告
         try {
             device.sendFeatureReport(sendBuffer);
+            debugLog('  命令发送成功');
         } catch (e) {
-            console.log(`  发送失败: ${e.message}`);
+            debugLog(`  发送失败: ${e.message}`);
             device.close();
             continue;
         }
 
-        // 等待并读取响应
+        await sleep(200);
+
         let response;
         try {
             response = device.getFeatureReport(reportId, 64);
         } catch (e) {
-            console.log(`  接收失败: ${e.message}`);
+            debugLog(`  接收失败: ${e.message}`);
             device.close();
             continue;
         }
 
         if (response && response.length > 0) {
             const raw = response.map(b => b ^ 0xFF);
-            const payload = raw.slice(2); // 跳过报告ID和命令码
+            const payload = raw.slice(2);
+            debugLog(`  取反后有效载荷: ${payload.map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
+
             if (payload.length >= 11) {
                 const battery = payload[9];
                 const chargeStatus = payload[10];
-                // 简单合理性验证：电量 0-100，充电状态 0/1
                 if (battery >= 0 && battery <= 100 && (chargeStatus === 0 || chargeStatus === 1)) {
                     console.log(`✅ 工作设备已找到！电量: ${battery}%, 充电状态: ${chargeStatus}`);
                     device.close();
@@ -65,84 +111,101 @@ function findWorkingDevicePath() {
     throw new Error('未能找到可正常通信的设备，请以管理员身份运行并关闭浏览器中的 MCHOSE HUB');
 }
 
-// 主程序
-try {
-    const devicePath = findWorkingDevicePath();
-    console.log('使用设备路径:', devicePath);
-    const device = new HID.HID(devicePath);
-    console.log('设备打开成功，开始监控电量...\n');
+(async () => {
+    try {
+        const devicePath = await findWorkingDevicePath();
+        console.log('使用设备路径:', devicePath);
+        const device = new HID.HID(devicePath);
+        console.log('设备打开成功，开始监控电量...');
+        console.log('监控已启动，每5分钟检查一次电量...\n');
 
-    const reportId = 0x11;
-    const dataPart = [0x06, ...Array(19).fill(0x00)];
-    const sendData = dataPart.map(b => b ^ 0xFF);
-    const sendBuffer = [reportId, ...sendData];
+        const reportId = 0x11;
+        const dataPart = [0x06, ...Array(19).fill(0x00)];
+        const sendData = dataPart.map(b => b ^ 0xFF);
+        const sendBuffer = [reportId, ...sendData];
 
-    function toHex(arr) {
-        return Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join(' ');
-    }
+        function toHex(arr) {
+            return Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join(' ');
+        }
 
-    async function readBattery() {
-        return new Promise((resolve, reject) => {
-            try {
-                device.sendFeatureReport(sendBuffer);
-            } catch (e) {
-                reject(new Error(`发送失败: ${e.message}`));
-                return;
-            }
+        // 带重试的读取函数
+        async function readBattery(retries = 3) {
+            for (let attempt = 1; attempt <= retries; attempt++) {
+                try {
+                    device.sendFeatureReport(sendBuffer);
+                } catch (e) {
+                    if (attempt === retries) throw new Error(`发送失败: ${e.message}`);
+                    await sleep(200 * attempt);
+                    continue;
+                }
 
-            setTimeout(() => {
+                await sleep(200 * attempt); // 逐渐增加延时
+
                 try {
                     const response = device.getFeatureReport(reportId, 64);
                     if (!response || response.length === 0) {
-                        reject(new Error('无响应'));
-                        return;
+                        if (attempt === retries) throw new Error('无响应');
+                        await sleep(200);
+                        continue;
                     }
 
                     const raw = response.map(b => b ^ 0xFF);
+                    if (DEBUG) {
+                        console.log('[DEBUG] 原始响应:', toHex(response));
+                        console.log('[DEBUG] 取反后:', toHex(raw));
+                    }
+
                     const payload = raw.slice(2);
                     if (payload.length < 11) {
-                        reject(new Error('响应长度不足'));
-                        return;
+                        if (attempt === retries) throw new Error('响应长度不足');
+                        continue;
                     }
 
                     const battery = payload[9];
                     const chargeStatus = payload[10];
-                    resolve({ battery, chargeStatus, rawResponse: raw });
+
+                    if (battery >= 0 && battery <= 100 && (chargeStatus === 0 || chargeStatus === 1)) {
+                        return { battery, chargeStatus };
+                    } else {
+                        debugLog(`  无效数据: battery=${battery}, chargeStatus=${chargeStatus}，重试...`);
+                        if (attempt === retries) throw new Error('无效的电量数据');
+                    }
                 } catch (e) {
-                    reject(e);
+                    if (attempt === retries) throw e;
                 }
-            }, 200);
-        });
-    }
-
-    async function pollBattery() {
-        try {
-            const { battery, chargeStatus, rawResponse } = await readBattery();
-            console.log(`🔋 电量: ${battery}% | 充电状态: ${chargeStatus === 1 ? '⚡充电中' : '未充电'}`);
-            if (battery <= 20 && chargeStatus !== 1) {
-                notifier.notify({
-                    title: '鼠标电量低',
-                    message: `当前电量 ${battery}%，请及时充电`,
-                    sound: true,
-                    wait: false
-                });
+                await sleep(200);
             }
-        } catch (err) {
-            console.error('❌ 读取失败:', err.message);
-            // 如果连续失败，可考虑重新查找设备（但本脚本简化处理）
+            throw new Error('读取失败');
         }
-        setTimeout(pollBattery, 5 * 60 * 1000); // 5分钟轮询
+
+        async function pollBattery() {
+            try {
+                const { battery, chargeStatus } = await readBattery();
+                console.log(`🔋 电量: ${battery}% | 充电状态: ${chargeStatus === 1 ? '⚡充电中' : '未充电'}`);
+                if (battery <= 20 && chargeStatus !== 1) {
+                    notifier.notify({
+                        title: '鼠标电量低',
+                        message: `当前电量 ${battery}%，请及时充电`,
+                        sound: true,
+                        wait: false
+                    });
+                }
+            } catch (err) {
+                console.error('❌ 读取失败:', err.message);
+            }
+            setTimeout(pollBattery, 5 * 60 * 1000);
+        }
+
+        pollBattery();
+
+        process.on('SIGINT', () => {
+            device.close();
+            console.log('程序退出');
+            process.exit();
+        });
+
+    } catch (err) {
+        console.error('初始化失败:', err.message);
+        process.exit(1);
     }
-
-    pollBattery();
-
-    process.on('SIGINT', () => {
-        device.close();
-        console.log('程序退出');
-        process.exit();
-    });
-
-} catch (err) {
-    console.error('初始化失败:', err.message);
-    process.exit(1);
-}
+})();
